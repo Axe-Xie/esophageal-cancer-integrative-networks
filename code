@@ -1,0 +1,646 @@
+#network construction
+load("dataForFinalCoxModelBuilding.RData")
+rm(ESCCDNAm_multi_coxRes)
+dim(ESCC$mRNA)#78 16207 ESCC$mRNA[1:20,1:20]
+ESCC_exp<-ESCC$mRNA[,-c(1:9)]#log2FPKM
+colnames(ESCC_exp)<-substr(colnames(ESCC_exp),1,15)
+dim(ESCC_exp)#78 16198
+ESCC_exp<-ESCC_exp[,apply(ESCC_exp, 2, function(x) sum(is.na(x))<20)]#删除缺失值超过20个的列
+ESCC_expMean<-apply(ESCC_exp, 2, function(x) mean(x))
+range(ESCC_expMean)#-2.037908 13.552942 #平均样本数据按8000万reads，估算基因表达水平
+ESCC_exp<-ESCC_exp[,ESCC_expMean>0]#78 15230
+ESCC_expSD<-apply(ESCC_exp, 2, function(x) sd(x))
+ESCC_expSD<-sort(ESCC_expSD,decreasing = T)
+ESCC_expSD[5000]#0.9250185  
+ESCC_exp<-ESCC_exp[,ESCC_expSD>0.925]# 78 5001
+ESCCmRNALASSO<-read.csv("D://data/TCGA-ESCA/mRNAmiRNADNAmet/ESCCresLASSOmRNA.csv",header = T,row.names = 1)
+all(substr(ESCCmRNALASSO$candiGene,1,15) %in% colnames(ESCC_exp))#F
+ESCCSigG<-union(colnames(ESCC_exp),substr(ESCCmRNALASSO$candiGene,1,15))#5015
+all(substr(ESCCmRNALASSO$candiGene,1,15) %in% ESCCSigG)#T
+ESCCWGCNAdt_m<-ESCC$mRNA[,na.omit(match(ESCCSigG,substr(colnames(ESCC$mRNA),1,15)))]# 78 5015,个基因
+colnames(ESCCWGCNAdt_m)<-substr(colnames(ESCCWGCNAdt_m),1,15)
+
+ESCC_exp_mi<-ESCC$miRNA[,-c(1:9)]#78 926
+ESCC_exp_mi<-ESCC_exp_mi[,apply(ESCC_exp_mi, 2, function(x) sum(is.na(x))<20)]#删除缺失值超过20个的列
+ESCC_exp_miMean<-apply(ESCC_exp_mi, 2, function(x) mean(x))
+range(ESCC_exp_miMean)#-0.9737219 18.2364460 #平均样本数据按1000万reads，估算基因表达水平
+ESCC_exp_mi<-ESCC_exp_mi[,ESCC_exp_miMean>-0.6]#78 738
+ESCC_exp_miSD<-apply(ESCC_exp_mi, 2, function(x) sd(x))
+range(ESCC_exp_miSD)#0.3825802 3.53155812 #ESCC_exp_mi<-ESCC_exp_mi[,ESCC_exp_miSD>0.1]# 78
+ESCCmiRNALASSO<-read.csv("D://data/TCGA-ESCA/mRNAmiRNADNAmet/ESCCresLASSOmiRNA.csv",header = T,row.names = 1)
+all(ESCCmiRNALASSO$resLASSOmiRNA %in% colnames(ESCC_exp_mi))#F
+ESCCSigMi<-union(colnames(ESCC_exp_mi),ESCCmiRNALASSO$resLASSOmiRNA)#751
+all(ESCCmiRNALASSO$resLASSOmiRNA %in% ESCCSigMi)#T
+ESCCWGCNAdt_mi<-ESCC$miRNA[,na.omit(match(ESCCSigMi,colnames(ESCC$miRNA)))]# 78 751,个基因
+
+identical(rownames(ESCCWGCNAdt_m),rownames(ESCCWGCNAdt_mi))#T
+ESCCWGCNAdt<-cbind(ESCCWGCNAdt_m,ESCCWGCNAdt_mi)#78  ,合并mRNA/miRNA的数据，用于wgcna
+
+#install.packages("WGCNA")
+library(WGCNA)
+options(stringsAsFactors = F)
+enableWGCNAThreads()
+str(ESCCWGCNAdt)
+gsg<-goodSamplesGenes(ESCCWGCNAdt)
+gsg$allOK#T
+sampleTree<-hclust(dist(ESCCWGCNAdt),method = "average")
+sizeGrWindow(12,9)
+par(cex=0.6,mar=c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", xlab = "", sub = "", cex.lab = 1.5, cex.axis = 1.5, cex.main = 2)
+
+powerVal<-c(c(1:10),seq(from=12,to=20,by=2))
+#sft<-pickSoftThreshold(ESCCWGCNAdt,powerVector = powerVal)#默认unsigned
+sft<-pickSoftThreshold(ESCCWGCNAdt,powerVector = powerVal,networkType = "signed")
+sizeGrWindow(9,5)
+par(mfrow=c(1,2))
+cex1=0.9
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab = "Soft Threshold (power)", ylab = "Scale Free Topology Model Fit, signed R^2", type = "n", main = paste("Scale independence"))
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels = powerVal, cex = cex1, col = "red")
+abline(h = 0.847, col = "red")
+plot(sft$fitIndices[[1]], sft$fitIndices[[5]], xlab = "Soft Threshold (power)", ylab = "Mean Connectivity", type = "n", main = paste("Mean Connectivity"))
+text(sft$fitIndices[[1]], sft$fitIndices[[5]], labels = powerVal, cex = cex1, col = "red")
+abline(h = 3.3, col = "red")
+#softpower = 4# We choose the power 6, which is the lowest power for which the scale-free topology fit index reaches 0.80.
+softpower = 16#
+#write.csv(data.frame(sft),"ESCCWGCNA_network_features_选择power为4.csv")
+write.csv(data.frame(sft),"ESCCWGCNA_m_miRNA_singnedNetwork_features_选择power为16.csv")
+
+#getAdjacency<-adjacency(ESCCWGCNAdt,power = softpower)
+getAdjacency<-adjacency(ESCCWGCNAdt,power = softpower,type = "signed")
+#getTOM<-TOMsimilarity(getAdjacency)
+getTOM<-TOMsimilarity(getAdjacency,TOMType = "signed")
+dissTOM<-1-getTOM
+geneTree<-hclust(as.dist(dissTOM),method = "average")
+sizeGrWindow(12,9)
+plot(geneTree,xlab = "",sub = "",main = "Gene clustering on TOM-based dissimilarity", labels = F, hang = 0.4)
+minModuSize<-30
+dynamicModules<-cutreeDynamic(dendro = geneTree,distM = dissTOM,deepSplit =2,pamRespectsDendro =F,minClusterSize = minModuSize)
+table(dynamicModules)#topSDgeng的signed network 49个mod。原来的riskscoreDEG unsigned 25个, signed netwrok 19个module
+
+dynamicColors<-labels2colors(dynamicModules)
+table(dynamicColors)
+sizeGrWindow(8,6)
+plotDendroAndColors(geneTree,dynamicColors,"Dynamic Tree Cut",dendroLabels =F,hang=0.03,addGuide =T,guideHang =0.05,main="Gene dendrogram and module colors")
+MElist<-moduleEigengenes(ESCCWGCNAdt,colors =dynamicColors)
+str(MElist)
+MEs<-MElist$eigengenes
+MEdiss<-1-cor(MEs)
+MEtree<-hclust(as.dist(MEdiss),method = "average")
+sizeGrWindow(7,6)
+plot(MEtree,main="Clustering of module eigengenes",xlab ="",sub = "")
+abline(h=0.20,col="red")
+merge<-mergeCloseModules(ESCCWGCNAdt,dynamicColors,cutHeight = 0.1)#设置0.1目的是不合并。Merging modules whose distance is less than 0.1
+mergeedColors<-merge$colors
+mergedMEs<-merge$newMEs
+sizeGrWindow(12,9)
+plotDendroAndColors(geneTree,cbind(dynamicColors,mergeedColors),c("Dynamic Tree Cut","Merged dynamic"),
+                    dendroLabels =F,hang=0.03,addGuide =T,guideHang = 0.05)
+moduleColors<-mergeedColors
+colorOrder<-c("grey",standardColors(50))
+moduleLabels<-match(moduleColors,colorOrder)-1
+MEs<-mergedMEs
+
+#moduole 和表型的相关性分析
+#样本聚类树+表型热图，两者数据顺序一致，作图
+#load("ESCC_Adeno_mRNAmiRNA_topSDWGCNA.RData")
+dim(ESCCWGCNAdt)#78 5766
+sampleTree
+ESCC_phen<-ESCCSelData$mRNA[,c(1:9)]#log2FPKM
+identical(rownames(ESCC_phen),rownames(ESCCWGCNAdt))#T
+ESCC_phen$gender<-unclass(factor(ESCC_phen$demographic.gender,levels = c("male","female")))#1 ,2
+ESCC_phen$Ajcc_stage<-unclass(factor(ESCC_phen$AjccStage,levels = c("Stage I","Stage II","Stage III","Stage IV")))
+ESCC_phen$grade<-unclass(factor(ESCC_phen$histologic_grade,levels = c("GX","G1","G2","G3")))
+ESCC_phen$smoking<-unclass(factor(ESCC_phen$Smoking_history,levels = c("Yes","No")))
+ESCC_phen$Alcohol_use<-unclass(factor(ESCC_phen$Alcohol_history,levels = c("Yes","No")))
+ESCC_phen<-ESCC_phen[,c(1,2,10,4,5,11,12,13,14)]
+colnames(ESCC_phen)<-c("survival_time","vital_status","gender","age","BMI","Ajcc_stage","grade","smoking_history","alcohol_history")
+
+trait_color<-data.frame(numbers2colors(as.numeric(ESCC_phen[,1])))
+for (i in 2:ncol(ESCC_phen)) {
+  getCol<-numbers2colors(as.numeric(ESCC_phen[,i]))
+  trait_color<-cbind(trait_color,getCol)
+}
+colnames(trait_color)<-colnames(ESCC_phen)#每一列是一个临床指标
+plotDendroAndColors(sampleTree,trait_color,groupLabels = colnames(trait_color),main="Sample dendrogram and clinical information")
+
+#module和表型关联分析并作图
+#recalculate MEs with color labels
+MEs0<-moduleEigengenes(ESCCWGCNAdt,moduleColors)$eigengenes
+MEs<-orderMEs(MEs0)
+dim(MEs)#78 sampole 25 eigengenes
+colnames(ESCC_phen)
+moduleTraitCor<-cor(MEs,ESCC_phen[,c(1,4,5,6,7)],use = "p")
+moduleTraitCor_Pval<-corPvalueStudent(moduleTraitCor,nSamples = 78)
+write.csv(as.data.frame(moduleTraitCor),"ESCCWGCNA_moduleTraitCor.csv")
+write.csv(as.data.frame(moduleTraitCor_Pval),"ESCCWGCNA_moduleTraitCor_Pvalue.csv")
+sizeGrWindow(10,9)
+#textMatrix<-paste(signif(moduleTraitCor[,-1],2),"\n(",signif(moduleTraitCor_Pval[,-1],2),")",sep = "")#生存数据删失不适合计算相关，删除
+textMatrix<-paste(signif(moduleTraitCor,2),"\n(",signif(moduleTraitCor_Pval,2),")",sep = "")
+par(mar=c(6,8.5,3,3))
+labeledHeatmap(Matrix = moduleTraitCor,xLabels = colnames(ESCC_phen[,c(1,4,5,6,7)]),#c(1,4,5,6,7)生存删失
+               yLabels = names(MEs),ySymbols = names(MEs),colorLabels = F,
+               colors = greenWhiteRed(50),textMatrix = textMatrix,setStdMargins =F,
+               cex.text = 0.7,main=paste("correlations (P value) between Modules and Phenotypes"))
+
+#Gene relationship to trait and important modules: Gene Significance and Module Membership
+names(MEs)
+modNames = substring(names(MEs), 3)
+geneModuleMembership = as.data.frame(cor(MEs,ESCCWGCNAdt,use = "p"))
+MMPvalues = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), 78))
+rownames(geneModuleMembership) = paste("MM", modNames, sep = "")
+rownames(MMPvalues) = paste("p.MM", modNames, sep = "")
+write.csv(geneModuleMembership,"ESCCWGCNA_geneModuleMembership.csv")
+write.csv(MMPvalues,"ESCCWGCNA_geneModuleMembership_Pval.csv")
+
+geneTraitSignifcance = as.data.frame(cor(ESCCWGCNAdt, ESCC_phen[,c(1,4,5,6,7)], use = "p"))
+GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignifcance), 78))
+names(geneTraitSignifcance) = paste("GS", colnames(ESCC_phen[,c(1,4,5,6,7)]), sep = ".")
+names(GSPvalue) = paste("p.GS", colnames(ESCC_phen[,c(1,4,5,6,7)]), sep = ".")
+write.csv(geneTraitSignifcance,"ESCCWGCNA_geneTraitSignifcance.csv")
+write.csv(GSPvalue,"ESCCWGCNA_geneTraitSignifcance_Pval.csv")
+
+#汇总信息
+dim(geneTraitSignifcance)#5766         5
+dim(GSPvalue)#5766         5
+length(moduleColors)#5766           
+dim(geneModuleMembership)# 25 5766    
+dim(MMPvalues)# 25  5766    
+identical(rownames(geneTraitSignifcance),rownames(GSPvalue))#T
+identical(colnames(geneModuleMembership),colnames(MMPvalues))#T
+identical(rownames(geneTraitSignifcance),colnames(geneModuleMembership))#T
+geneInformation<-data.frame(moduleColors,geneTraitSignifcance,GSPvalue,as.data.frame(t(geneModuleMembership)),as.data.frame(t(MMPvalues)))
+write.csv(geneInformation,"ESCCWGCNA_all_geneInformation.csv")#是ESCC数据
+
+#Network visualization using WGCNA functions softpower#4
+softpower#16
+dim(dissTOM)# 5766     5766    
+#Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
+# Taking the dissimilarity to a power, say 10, makes the plot more informative by effectively changing
+# the color palette; setting the diagonal to NA also improves the clarity of the plot
+#plotTOM<-dissTOM^10
+#diag(plotTOM)<-NA
+TOMplot(plotTOM, geneTree, moduleColors)#注意Error: cannot allocate vector of size 354.6 Mb
+
+#Note that the generating the heatmap plot may take a substantial amount of time. It is possible to restrict the
+#number of genes to speed up the plotting; however, the gene dendrogram of a subset of genes will often look different
+#from the gene dendrogram of all genes. In the following example we restrict the number of plotted genes to 400:
+#random get 4000genes
+nSelect = 2000
+set.seed(8)
+nGenes<-ncol(ESCCWGCNAdt)
+select = sample(nGenes, size = nSelect)
+selectTOM = dissTOM[select, select]
+#There is no simple way of restricting a clustering tree to a sunset of genes, so we must re-cluster
+selectTree = hclust(as.dist(selectTOM), method = 'average')
+selectColors = moduleColors[select]
+plotDiss = selectTOM^50
+diag(plotDiss) = NA
+sizeGrWindow(9, 9)
+TOMplot(plotDiss, selectTree, selectColors, main = 'Network heatmap')
+dev.copy(tiff,file = 'Network heatmap_setSeed_2000G.tiff', bg = 'transparent', height = 600, width = 600)
+dev.off()
+
+#Visualizing the network of eigengenes
+dim(ESCCWGCNAdt) #78 5766
+MEs = moduleEigengenes(ESCCWGCNAdt, moduleColors)$eigengenes
+MEs = orderMEs(MEs)
+plotEigengeneNetworks(MEs,"", marDendro = c(0,4,1,4.3), marHeatmap = c(2,4,0,2), cex.lab = 1.2, xLabelsAngle= 35)
+dev.copy(png, file = 'ESCCWGCNA_plotEigengeneNetworksMEs.png', bg = 'transparent', width =650, height = 400)
+dev.off()
+sizeGrWindow(4,4)
+plotEigengeneNetworks(MEs, "Eigengene adjacency heatmap", marHeatmap = c(3,4,2,2),
+                      plotDendrograms = FALSE,　excludeGrey = FALSE, greyLabel = "grey", 　 xLabelsAngle = 90)
+dev.copy(png, file = 'ESCCWGCNA_Eigengene adjacency heatmap MEs.png', bg = 'transparent', height = 600, width = 600)
+dev.off()
+
+#auto export each module individually
+allModule<-unique(moduleColors)
+dim(getTOM)#5766 5766
+for (i in 1:25) {
+  getMod<-allModule[i]
+  inMod<-moduleColors==getMod
+  allGene<-rownames(geneInformation)
+  modGene<-allGene[inMod]
+  modTOM<-getTOM[inMod,inMod]
+  dimnames(modTOM)<-list(modGene,modGene)
+  cyt<-exportNetworkToCytoscape(modTOM,edgeFile = paste("Cyto_input_edege_",getMod,".txt",sep=""),
+                                nodeFile = paste("Cyto_input_node_",getMod,".txt",sep =""),
+                                weighted = T,threshold = 0.02,nodeNames = modGene,
+                                nodeAttr = moduleColors[inMod])
+}
+
+#基因所在模块与表型的关系 ESCCUnion_getSymb$ensembl_gene_id#5个基因
+此段看需要再运行
+length(moduleColors)#3745
+dim(geneModuleMembership)#24 3745
+dim(MMPvalues)#24 3745
+getLoc<-match(ESCCUnion_getSymb$ensembl_gene_id,colnames(geneModuleMembership))
+ESCC_candiG_inMod<-moduleColors[getLoc]
+ESCC_candiG_inMod<-data.frame(ESCCUnion_getSymb$ensembl_gene_id,ESCC_candiG_inMod)
+
+ESCC_candiG_inMod_cor<-geneModuleMembership[match(ESCC_candiG_inMod[,2],substring(rownames(geneModuleMembership),3)),
+                                            match(ESCC_candiG_inMod[,1],colnames(geneModuleMembership))]
+#ESCC_candiG_inMod_cor<-t(ESCC_candiG_inMod_cor[-5,])#候选基因中的两个在brown，去掉一个重复的brown
+ESCC_candiG_inMod_cor<-t(ESCC_candiG_inMod_cor[-c(3,5),])#候选基因中的3个在brown，去掉2个重复的brown
+ESCC_candiG_inMod_cor_Pval<-MMPvalues[match(ESCC_candiG_inMod[,2],substring(rownames(MMPvalues),5)),
+                                      match(ESCC_candiG_inMod[,1],colnames(MMPvalues))]
+ESCC_candiG_inMod_cor_Pval<-t(ESCC_candiG_inMod_cor_Pval[-c(3,5),])
+textMatrixCandi_inMod<-paste(signif(as.matrix(ESCC_candiG_inMod_cor),2),"\n(",signif(as.matrix(ESCC_candiG_inMod_cor_Pval),2),")",sep = "")
+par(mar=c(6,8.5,3,3))
+labeledHeatmap(Matrix = ESCC_candiG_inMod_cor,xLabels = colnames(ESCC_candiG_inMod_cor),xSymbols = colnames(ESCC_candiG_inMod_cor),
+               yLabels = rownames(ESCC_candiG_inMod_cor),ySymbols = rownames(ESCC_candiG_inMod_cor),
+               colorLabels = F,
+               colors = greenWhiteRed(50),textMatrix = textMatrixCandi_inMod,setStdMargins =F,
+               cex.text = 1,main=paste("Correlations (P value)"))
+
+
+stage-grade/surviva相关mod/gene 20210406
+###ESCC 相关modules,两个条件满足一个即可:
+#1.mod engengene做uniCox生存分析达到显著且含有LASSOuniCoxG且gene的MM达到显著水平(生存相关)或者mod的hub gene是LASSO-uniCox结果基因。
+#2.mod与trait显著相关（AJCC stage/grade相关）。
+#筛选ESCC WGCNA 结果geneInfo中通过LASSO-uniCOx检验的基因，且相应MM达到显著的结果
+ESCCmRNALASSO<-read.csv("D://data/TCGA-ESCA/mRNAmiRNADNAmet/ESCCmRNA_uniCoxForLASOOsel.csv",header = T,row.names = 1)
+ESCCmiRNALASSO<-read.csv("D://data/TCGA-ESCA/mRNAmiRNADNAmet/ESCCmiRNA_uniCoxForLASOOsel.csv",header = T,row.names = 1)
+dim(ESCCWGCNA_geneInfo)
+ESCC_m_mi_LASSO<-union(substr(ESCCmRNALASSO$uni_cox_sig_gene,1,15),gsub("[.]","-",ESCCmiRNALASSO$uni_cox_sig_gene))#40
+ESCC_m_mi_LASSO_WGCNA_G<-ESCCWGCNA_geneInfo[rownames(ESCCWGCNA_geneInfo) %in% ESCC_m_mi_LASSO,]#WGCNA 结果geneInfo中通过LASSO-uniCOx检验的基因，13个modules
+table(ESCC_m_mi_LASSO_WGCNA_G$moduleColors)#WGCNA 结果geneInfo中通过LASSO-uniCOx检验的基因
+write.csv(ESCC_m_mi_LASSO_WGCNA_G,"ESCCWGCNAMod_contain_LASSOuniCoxG.csv")
+rm(ESCC_m_mi_LASSO)
+getESCCRelatMod<-data.frame()
+for (i in 1:nrow(ESCC_m_mi_LASSO_WGCNA_G)) {
+  id<-paste0("p.MM",ESCC_m_mi_LASSO_WGCNA_G$moduleColors[i])
+  p.MM<-ESCC_m_mi_LASSO_WGCNA_G[i,match(id,colnames(ESCC_m_mi_LASSO_WGCNA_G))]
+  if (p.MM<=0.05) {
+    getESCCRelatMod<-rbind(getESCCRelatMod,ESCC_m_mi_LASSO_WGCNA_G[i,])
+  }
+}#且相应MM达到显著的结果
+table(getESCCRelatMod$moduleColors)#29 61 ,13个不重复mod
+write.csv(getESCCRelatMod,"ESCCSurvRelatMod_contain_LASSOuniCoxG_with_MMsig.csv")
+#用mod engengene(mod ME)做uni cox生存分析，筛选sig mod
+dim(ESCCWGCNAdt)#78 5766
+library(WGCNA)
+options(stringsAsFactors = F)
+enableWGCNAThreads()
+str(ESCCWGCNAdt)
+gsg<-goodSamplesGenes(ESCCWGCNAdt)
+gsg$allOK#T
+softpower = 16#
+#getAdjacency<-adjacency(ESCCWGCNAdt,power = softpower)
+getAdjacency<-adjacency(ESCCWGCNAdt,power = softpower,type = "signed")
+#getTOM<-TOMsimilarity(getAdjacency)
+getTOM<-TOMsimilarity(getAdjacency,TOMType = "signed")
+dissTOM<-1-getTOM
+geneTree<-hclust(as.dist(dissTOM),method = "average")
+minModuSize<-30
+dynamicModules<-cutreeDynamic(dendro = geneTree,distM = dissTOM,deepSplit =2,pamRespectsDendro =F,minClusterSize = minModuSize)
+table(dynamicModules)#topSDgeng的signed network 49个mod。原来的riskscoreDEG unsigned 25个, signed netwrok 19个module
+
+dynamicColors<-labels2colors(dynamicModules)
+table(dynamicColors)
+MElist<-moduleEigengenes(ESCCWGCNAdt,colors =dynamicColors)
+MEs<-MElist$eigengenes
+MEdiss<-1-cor(MEs)
+MEtree<-hclust(as.dist(MEdiss),method = "average")
+merge<-mergeCloseModules(ESCCWGCNAdt,dynamicColors,cutHeight = 0.1)#设置0.1目的是不合并。Merging modules whose distance is less than 0.1
+mergeedColors<-merge$colors
+mergedMEs<-merge$newMEs
+moduleColors<-mergeedColors
+colorOrder<-c("grey",standardColors(50))
+moduleLabels<-match(moduleColors,colorOrder)-1
+MEs<-mergedMEs
+#重新输出每个mod的数据，修改阈值
+#auto export each module individually
+allModule<-unique(moduleColors)
+dim(getTOM)#5766 5766
+for (i in 1:25) {
+  getMod<-allModule[i]
+  inMod<-moduleColors==getMod
+  allGene<-rownames(geneInformation)
+  modGene<-allGene[inMod]
+  modTOM<-getTOM[inMod,inMod]
+  dimnames(modTOM)<-list(modGene,modGene)
+  cyt<-exportNetworkToCytoscape(modTOM,edgeFile = paste("Cyto_input_edege_",getMod,".txt",sep=""),
+                                nodeFile = paste("Cyto_input_node_",getMod,".txt",sep =""),
+                                weighted = T,threshold = 0.00,nodeNames = modGene,#注意阈值0.02，约删除1/3 node
+                                nodeAttr = moduleColors[inMod])
+}
+rm(getMod,allModule,inMod,allGene,modGene,modTOM,cyt)
+#用mod engengene(mod ME)做uni cox生存分析，筛选sig mod
+#recalculate MEs with color labels
+MEs0<-moduleEigengenes(ESCCWGCNAdt,moduleColors)$eigengenes
+MEs<-orderMEs(MEs0)
+dim(MEs)#78 sampole 25 eigengenes
+colnames(ESCC_phen)
+identical(rownames(MEs),rownames(ESCC_phen))#T
+ESCC_ME_uniCox<-cbind(ESCC_phen,MEs)
+#批量单因素univariable cox proportional hazard regression分析
+source("uni_cox_in_bulk.R")#uni_cox_in_bulk(gene_list = MygeneVector,survival_data=Mysurvival_data)
+colnames(ESCC_ME_uniCox)<-c("survivalTime","vitalStatus",colnames(ESCC_ME_uniCox)[-c(1,2)])
+gene_list<-colnames(ESCC_ME_uniCox)[10:34]
+ESCC_ME_uniCoxRes<-uni_cox_in_bulk(gene_list = gene_list,survival_data = ESCC_ME_uniCox)
+ESCC_ME_uniCoxRes<-ESCC_ME_uniCoxRes[order(ESCC_ME_uniCoxRes$z_pvalue),]
+write.csv(ESCC_ME_uniCoxRes,"ESCC_ME_uniCoxRes.csv")
+#以上ME（第一主成分）uniCox,只有brown 的p=0.052接近显著.下面使用第2主成分计算uniCOx 
+#确定生存相关mod,mod engengene做uniCox生存分析达到显著，含有LASSOuniCox筛选基因且MM达到显著水平（生存相关）
+getESCCRelatMod[getESCCRelatMod$moduleColors %in% "brown",]#hsa-miR-4746-5p        brown        
+#下面使用第1主成分计算uniCOx 验证
+dim(ESCCWGCNAdt)
+table(moduleColors)#25
+ESCCmodExpList<-list()
+for (i in 1:length(unique(moduleColors))) {
+  Mod<-unique(moduleColors)[i]
+  getModG<-rownames(ESCCWGCNA_geneInfo)[ESCCWGCNA_geneInfo$moduleColors %in% Mod]
+  getModG_exp<-ESCCWGCNAdt[,getModG]#列为基因id
+  pc<-prcomp(getModG_exp,scale=TRUE,center=TRUE,retX=TRUE)
+  ESCCmodExpList[[i]]<-pc$x[,1]#
+}
+ESCCmod_PC1<-do.call(cbind,ESCCmodExpList)
+rm(i,Mod,getModG,getModG_exp,pc,ESCCmodExpList)
+colnames(ESCCmod_PC1)<-unique(moduleColors)
+identical(rownames(ESCCmod_PC1),rownames(ESCC_phen))#T
+ESCC_PC1_uniCox<-cbind(ESCC_phen,ESCCmod_PC1)
+colnames(ESCC_PC1_uniCox)<-c("survivalTime","vitalStatus",colnames(ESCC_PC1_uniCox)[-c(1,2)])
+#批量单因素univariable cox proportional hazard regression分析
+gene_list<-colnames(ESCC_PC1_uniCox)[10:34]
+ESCC_PC1_uniCoxRes<-uni_cox_in_bulk(gene_list = gene_list,survival_data = ESCC_PC1_uniCox)
+ESCC_PC1_uniCoxRes<-ESCC_PC1_uniCoxRes[order(ESCC_PC1_uniCoxRes$z_pvalue),]
+write.csv(ESCC_PC1_uniCoxRes,"ESCC_PC1_uniCoxRes.csv")#结果与上一步ME结果相比，所有类型的p值均一致，但beta和HR值不一致。
+#下面使用第2主成分计算uniCOx 
+dim(ESCCWGCNAdt)
+table(moduleColors)#25
+ESCCmodExpList<-list()
+for (i in 1:length(unique(moduleColors))) {
+  Mod<-unique(moduleColors)[i]
+  getModG<-rownames(ESCCWGCNA_geneInfo)[ESCCWGCNA_geneInfo$moduleColors %in% Mod]
+  getModG_exp<-ESCCWGCNAdt[,getModG]#列为基因id
+  pc<-prcomp(getModG_exp,scale=TRUE,center=TRUE,retX=TRUE)
+  ESCCmodExpList[[i]]<-pc$x[,2]#
+}
+rm(i,Mod,getModG,getModG_exp,pc)
+ESCCmod_PC2<-do.call(cbind,ESCCmodExpList)
+colnames(ESCCmod_PC2)<-unique(moduleColors)
+identical(rownames(ESCCmod_PC2),rownames(ESCC_phen))#T
+ESCC_PC2_uniCox<-cbind(ESCC_phen,ESCCmod_PC2)
+colnames(ESCC_PC2_uniCox)<-c("survivalTime","vitalStatus",colnames(ESCC_PC2_uniCox)[-c(1,2)])
+#批量单因素univariable cox proportional hazard regression分析
+gene_list<-colnames(ESCC_PC2_uniCox)[10:34]
+ESCC_PC2_uniCoxRes<-uni_cox_in_bulk(gene_list = gene_list,survival_data = ESCC_PC2_uniCox)
+ESCC_PC2_uniCoxRes<-ESCC_PC2_uniCoxRes[order(ESCC_PC2_uniCoxRes$z_pvalue),]
+write.csv(ESCC_PC2_uniCoxRes,"ESCC_PC2_uniCoxRes.csv")
+#下面使用第3，4主成分计算uniCOx 
+代码略
+rm(ESCCmod_PC1,ESCCmod_PC2,ESCCmod_PC3)
+
+#1.mod engengene做uniCox生存分析达到显著且MM达到显著水平(生存相关)或者mod的hub gene是LASSO-uniCox结果基因。
+#或者mod的hub gene是LASSO-uniCox结果基因。
+#链接都算1,不考虑权重
+ESCCmod<-list.files("D://data/signed ECmRNAmiRNAtopSDWGCNA/ESCCWGCNA_module_network/")#"Cytoinput_edege_black.txt"
+ESCCmod<-ESCCmod[grep("edege",ESCCmod)]
+for (i in 1:length(ESCCmod)) {
+  getModName<-unlist(strsplit(ESCCmod[i],"_"))[4]#"black.txt"
+  getModName<-unlist(strsplit(getModName,"[.]"))[1]#"black"
+  getModDt<-read.csv(paste0("D://data/signed ECmRNAmiRNAtopSDWGCNA/ESCCWGCNA_module_network/",ESCCmod[i]),header = T,sep = "\t")
+  getModNodeDegree<-as.data.frame(table(getModDt$fromNode))
+  getModNodeDegree1<-as.data.frame(table(getModDt$toNode))
+  getModNodeDeg<-merge(getModNodeDegree,getModNodeDegree1,by="Var1",all=T)
+  getModNodeDeg$Freq.y[is.na(getModNodeDeg$Freq.y)]<-0#NA替换为0
+  getModNodeDeg$Freq.x[is.na(getModNodeDeg$Freq.x)]<-0#
+  getModNodeDeg$degree<-getModNodeDeg$Freq.x+getModNodeDeg$Freq.y
+  getModNodeDeg<-getModNodeDeg[order(getModNodeDeg$degree,decreasing = T),]
+  if (getModName %in% unique(ESCC_m_mi_LASSO_WGCNA_G$moduleColors)) {
+    getGeneId<-rownames(ESCC_m_mi_LASSO_WGCNA_G)[ESCC_m_mi_LASSO_WGCNA_G$moduleColors %in% getModName]
+    getModNodeDeg$isLASSOuniCoxValid<-ifelse(getModNodeDeg$Var1 %in% getGeneId,"Yes","No")
+  }
+  write.csv(getModNodeDeg,paste0("D://data/signed ECmRNAmiRNAtopSDWGCNA/ESCCWGCNA_module_network/",getModName,"_NodeDegree.csv"))
+}#注意结果数据中mod是过滤后的(将mod中低连接度的node删除了，所以有些基因找不到)?exportNetworkToCytoscape(threshold = 0.02)
+rm(getModName,getModDt,getModNodeDeg,getModNodeDegree,getModNodeDegree1,ESCCmod,getGeneId)
+
+#考虑权重，计算node的链接degree
+ESCCmod<-list.files("D://data/signed ECmRNAmiRNAtopSDWGCNA/ESCCWGCNA_module_network/")#"Cytoinput_edege_black.txt"
+ESCCmod<-ESCCmod[grep("edege",ESCCmod)]
+for (i in 1:length(ESCCmod)) {
+  degreeList1<-list()
+  degreeList2<-list()
+  getModName<-unlist(strsplit(ESCCmod[i],"_"))[4]#"black.txt"
+  getModName<-unlist(strsplit(getModName,"[.]"))[1]#"black"
+  getModDt<-read.csv(paste0("D://data/signed ECmRNAmiRNAtopSDWGCNA/ESCCWGCNA_module_network/",ESCCmod[i]),header = T,sep = "\t")
+  getModNodeDegree<-as.data.frame(table(getModDt$fromNode))
+  for (j in 1:nrow(getModNodeDegree)) {
+    geneId1<-getModNodeDegree$Var1[j]
+    geneId1<-getModDt[getModDt$fromNode %in% geneId1,]
+    degreeList1[[j]]<-sum(geneId1$weight,na.rm = T)
+  }
+  getModNodeDegree$weightedDegree<-unlist(degreeList1)
+  rm(degreeList1)
+  getModNodeDegree1<-as.data.frame(table(getModDt$toNode))
+  for (k in 1:nrow(getModNodeDegree1)) {
+    geneId1<-getModNodeDegree1$Var1[k]
+    geneId1<-getModDt[getModDt$toNode %in% geneId1,]
+    degreeList2[[k]]<-sum(geneId1$weight,na.rm = T)
+  }
+  getModNodeDegree1$weightedDegree<-unlist(degreeList2)
+  rm(degreeList2)
+  getModNodeDegree<-getModNodeDegree[,-2]
+  getModNodeDegree1<-getModNodeDegree1[,-2]
+  getModNodeDeg<-merge(getModNodeDegree,getModNodeDegree1,by="Var1",all=T)
+  getModNodeDeg$weightedDegree.y[is.na(getModNodeDeg$weightedDegree.y)]<-0#NA替换为0
+  getModNodeDeg$weightedDegree.x[is.na(getModNodeDeg$weightedDegree.x)]<-0#
+  getModNodeDeg$degree<-getModNodeDeg$weightedDegree.x+getModNodeDeg$weightedDegree.y
+  getModNodeDeg<-getModNodeDeg[order(getModNodeDeg$degree,decreasing = T),]
+  if (getModName %in% unique(ESCC_m_mi_LASSO_WGCNA_G$moduleColors)) {
+    getGeneId<-rownames(ESCC_m_mi_LASSO_WGCNA_G)[ESCC_m_mi_LASSO_WGCNA_G$moduleColors %in% getModName]
+    getModNodeDeg$isLASSOuniCoxValid<-ifelse(getModNodeDeg$Var1 %in% getGeneId,"Yes","No")
+  }
+  write.csv(getModNodeDeg,paste0("D://data/signed ECmRNAmiRNAtopSDWGCNA/ESCCWGCNA_module_network/",getModName,"_NodeWeightedDegree.csv"))
+}#注意结果数据中mod是过滤后的(将mod中低连接度的node删除了，所以有些基因找不到)?exportNetworkToCytoscape(threshold = 0.02)
+rm(getModName,getModDt,getModNodeDeg,getModNodeDegree,getModNodeDegree1,ESCCmod,getGeneId,geneId1,i,j,k,degreeList2,degreeList1)
+
+###ESCC 相关gene.
+###总结上述结果,ESCC生存相关mod:brown grey60. stage/grade相关mod：yellow  lightyellow  magenta  pink  tan
+#在ESCC相关modules基础上确定ESCC related gene,两个条件满足一个即可, 1. 生存相关mod中的LASSO-UniCox验证通过的gene（生存相关）。2.是mod hubs 且GS/MM达到显著水平(AJCC stage/grade相关)。
+#ESCC生存相关gene（条件1. 生存相关mod中的LASSO-UniCox验证通过的gene（生存相关））
+见word中表，根据上述计算结果查找列出
+#ESCC AJCC stage/grade相关mod相关基因。相关mod:yellow  lightyellow  magenta  pink  tan black
+#查询其hub gene情况（条件2：是mod hubs 且GS/MM达到显著水平(AJCC stage/grade相关)。）
+#GS/MM达到显著水平
+#ESCC_stageRelateMod<-c("yellow")
+#ESCC_gradeRelateMod<-c("yellow","lightyellow","magenta","pink","tan","black")
+ESCC_stage_grade_RelateMod<-c("yellow","lightyellow","magenta","pink","tan","black")
+ESCC_stage_grade_RelateModG<-ESCCWGCNA_geneInfo[ESCCWGCNA_geneInfo$moduleColors %in% ESCC_stage_grade_RelateMod,]
+ESCC_stageRelateMod<-data.frame()
+ESCC_gradeRElateMod<-data.frame()
+for (i in 1:nrow(ESCC_stage_grade_RelateModG)) {
+  if (ESCC_stage_grade_RelateModG$moduleColors[i]=="yellow") {
+    p.GS.Ajcc_stage<-ESCC_stage_grade_RelateModG[i,"p.GS.Ajcc_stage"]
+    p.MMyellow<-ESCC_stage_grade_RelateModG[i,"p.MMyellow"]
+    p.GS.grade<-ESCC_stage_grade_RelateModG[i,"p.GS.grade"]
+    if (p.GS.Ajcc_stage<=0.05&p.MMyellow<=0.05) {
+      ESCC_stageRelateMod<-rbind(ESCC_stageRelateMod,ESCC_stage_grade_RelateModG[i,])
+    }
+    if (p.GS.grade<=0.05&p.MMyellow<=0.05) {
+      ESCC_gradeRElateMod<-rbind(ESCC_gradeRElateMod,ESCC_stage_grade_RelateModG[i,])
+    }
+  } else {
+    p.GS.grade<-ESCC_stage_grade_RelateModG[i,"p.GS.grade"]
+    getId<-paste0("p.MM",ESCC_stage_grade_RelateModG$moduleColors[i])
+    p.MM<-ESCC_stage_grade_RelateModG[i,getId]
+    if (p.GS.grade<=0.05&p.MM<=0.05) {
+      ESCC_gradeRElateMod<-rbind(ESCC_gradeRElateMod,ESCC_stage_grade_RelateModG[i,])
+    }
+  }
+}#且相应MM/GS达到显著的结果
+ESCC_stage_grade_RelateModG<-rbind(ESCC_stageRelateMod,ESCC_gradeRElateMod)
+table(ESCC_stage_grade_RelateModG$moduleColors)#6 mods
+write.csv(ESCC_stage_grade_RelateModG,"ESCC_stage_grade_RelateModG_withGene.GS.MM.sig.csv")
+rm(i,ESCC_stage_grade_RelateMod,p.GS.Ajcc_stage,p.MMyellow,p.GS.grade,ESCC_gradeRElateMod,ESCC_stageRelateMod,getId,p.MM)
+#排查上述筛选基因是否是所在mod的hub gene
+ESCC_stage_grade_RelateMod<-c("yellow","lightyellow","magenta","pink","tan","black")
+for (i in ESCC_stage_grade_RelateMod) {
+  SingleMod<-ESCC_stage_grade_RelateModG[ESCC_stage_grade_RelateModG$moduleColors==i,]
+  SingleModDt<-read.csv(paste0("D://data/signed ECmRNAmiRNAtopSDWGCNA/ESCCWGCNA_module_network/",i,"_NodeWeightedDegree.csv"),header = T)
+  SingleModDt$isGradeStageRelated<-ifelse(SingleModDt$Var1 %in% SingleMod$X,"Yes","No")#注意用rownames(SingleMod)当接上步运行，如read.csv读取则用$X
+  write.csv(SingleModDt,paste0("ESCC_stage_grade_",i,"_withGene.GS.MM.sig_CkeckModHubDt.csv"))
+}
+rm(i,ESCC_stage_grade_RelateMod,ESCC_stage_grade_RelateModG,SingleModDt,SingleMod)
+
+###候选mod的GO/KEGG分析
+if(!requireNamespace("BiocManager",quietly = T))
+  install.packages("BiocManager")
+BiocManager::install("clusterProfiler")
+BiocManager::install("ReactomePA")
+BiocManager::install("DOSE")
+library("clusterProfiler")#comparing biological themes among gene clusters.
+library("DOSE")# Disease Ontology Semantic and Enrichment analysis
+library("stringr")#KEGG
+library("org.Hs.eg.db")
+library(ggplot2)
+#ESCC GO KEGG  DO(Disease Ontology） Reactome_pathways
+ESCC_mod<-c("brown","grey60","yellow","lightyellow","magenta","pink","tan")
+for (j in ESCC_mod) {
+  modDt<-read.csv(paste0("D://data/signed ECmRNAmiRNAtopSDWGCNA/ESCCWGCNA_module_network/Cyto_input_node_",j,".txt"),header = T,sep = "\t")
+  gene = modDt$nodeName[grep("ENSG",modDt$nodeName)]#去掉miRNA,但对结果无影响
+  for (i in c("MF","BP","CC")) {
+    ego<-enrichGO(gene =gene,
+                  OrgDb = org.Hs.eg.db,
+                  keyType = 'ENSEMBL',
+                  ont = i,
+                  pAdjustMethod = "BH",
+                  pvalueCutoff = 0.01,
+                  qvalueCutoff = 0.05)
+    write.csv(ego,paste0("ESCC GO",i,j,"Mod.csv"))
+    #print(dotplot(ego,showCategory = 10,title=paste("GO",i,"enrichments",sep = " ")))
+    #dev.copy(tiff,paste("ESCC GO",i,j,"Mod.tiff",sep ="_"),height=320,width=450,bg="transparent")
+    #dev.off()
+  }#此处必须加print()命令，否则不出图，不知原因？
+}#GO
+rm(j,i,modDt,gene,ego)
+
+library(biomaRt)#library("stringr")的KEGG分析需要entrez geneID
+mart<-useDataset("hsapiens_gene_ensembl",useMart("ENSEMBL_MART_ENSEMBL"))
+for (j in ESCC_mod) {
+  modDt<-read.csv(paste0("D://data/signed ECmRNAmiRNAtopSDWGCNA/ESCCWGCNA_module_network/Cyto_input_node_",j,".txt"),header = T,sep = "\t")
+  gene = modDt$nodeName[grep("ENSG",modDt$nodeName)]#去掉miRNA,但对结果无影响
+  gene<-getBM(attributes = c("ensembl_gene_id","entrezgene_id"),filters = "ensembl_gene_id",values = gene,mart = mart)
+  gene<-gene$entrezgene_id
+  keggEnrich<-enrichKEGG(gene = gene,
+                         organism = 'hsa',
+                         pvalueCutoff = 0.05,
+                         qvalueCutoff = 0.05,
+                         minGSSize = 1,
+                         use_internal_data = F)
+  write.csv(keggEnrich,paste0("ESCC KEGG ",j," Mod.csv"))
+  #print(dotplot(keggEnrich,showCategory=10,title="KEGG enrichments"))#必加print
+  #dev.copy(tiff,paste("ESCC KEGG",j,"Mod.tiff",sep ="_"),height=320,width=500,bg="transparent")
+  #dev.off()
+}#KEGG
+rm(j,modDt,gene,keggEnrich)
+
+for (j in ESCC_mod) {
+  modDt<-read.csv(paste0("D://data/signed ECmRNAmiRNAtopSDWGCNA/ESCCWGCNA_module_network/Cyto_input_node_",j,".txt"),header = T,sep = "\t")
+  gene = modDt$nodeName[grep("ENSG",modDt$nodeName)]#去掉miRNA,但对结果无影响
+  gene<-getBM(attributes = c("ensembl_gene_id","entrezgene_id"),filters = "ensembl_gene_id",values = gene,mart = mart)
+  gene<-gene$entrezgene_id
+  kegg_DO<-enrichDO(gene = gene,
+                    ont="DO",
+                    pvalueCutoff = 0.05,
+                    pAdjustMethod = "BH",
+                    minGSSize = 10,
+                    qvalueCutoff = 0.2)
+  print(dotplot(kegg_DO,showCategory=30,title="The disease ontology enrichment analysis"))#必加print
+  dev.copy(tiff,paste("ESCC Disease Ontology",j,"Mod.tiff",sep ="_"),height=320,width=500,bg="transparent")
+  dev.off()
+}#DO（Disease Ontology）
+
+library("ReactomePA")
+for (j in ESCC_mod) {
+  modDt<-read.csv(paste0("D://data/signed ECmRNAmiRNAtopSDWGCNA/ESCCWGCNA_module_network/Cyto_input_node_",j,".txt"),header = T,sep = "\t")
+  gene = modDt$nodeName[grep("ENSG",modDt$nodeName)]#去掉miRNA,但对结果无影响
+  gene<-getBM(attributes = c("ensembl_gene_id","entrezgene_id"),filters = "ensembl_gene_id",values = gene,mart = mart)
+  gene<-gene$entrezgene_id
+  ReactomePA_enrich<-enrichPathway(gene = gene,pvalueCutoff = 0.05,organism = "human")
+  write.csv(ReactomePA_enrich,paste0("ESCC ReactomePA ",j," Mod_dotplot.csv"))
+  print(dotplot(ReactomePA_enrich,showCategory=30,title="ReactomePA pathways enrichments"))
+  dev.copy(tiff,paste("ESCC ReactomePA",j,"Mod_dotplot.tiff",sep ="_"),height=320,width=500,bg="transparent")
+  dev.off()
+  print(emapplot(ReactomePA_enrich))#This function visualizes gene sets as a network (i.e. enri
+  dev.copy(tiff,paste("ESCC ReactomePA",j,"Mod_emapplot.tiff",sep ="_"),height=320,width=500,bg="transparent")
+  dev.off()
+}#Reactome pathways enrichment analysis,ReactomePA6 uses Reactome as a source of pathway data.
+rm(j,modDt,gene,keggEnrich,kegg_DO,ReactomePA_enrich)
+
+
+###Adeno GO KEGG  Reactome_pathways
+library("ReactomePA")
+library("clusterProfiler")#comparing biological themes among gene clusters.
+library("DOSE")# Disease Ontology Semantic and Enrichment analysis
+library("stringr")#KEGG
+library("org.Hs.eg.db")
+library(ggplot2)
+library(biomaRt)#library("stringr")的KEGG分析需要entrez geneID
+rm(j,modDt,gene,keggEnrich,kegg_DO,ReactomePA_enrich)
+mart<-useDataset("hsapiens_gene_ensembl",useMart("ENSEMBL_MART_ENSEMBL"))
+
+Adeno_mod<-c("midnightblue","royalblue","pink","lightcyan","brown","blue")
+for (j in Adeno_mod) {
+  modDt<-read.csv(paste0("D://data/signed ECmRNAmiRNAtopSDWGCNA/AdenoWGCNA_module_network/Cyto_input_node_",j,".txt"),header = T,sep = "\t")
+  gene = modDt$nodeName[grep("ENSG",modDt$nodeName)]#去掉miRNA,但对结果无影响
+  for (i in c("MF","BP","CC")) {
+    ego<-enrichGO(gene =gene,
+                  OrgDb = org.Hs.eg.db,
+                  keyType = 'ENSEMBL',
+                  ont = i,
+                  pAdjustMethod = "BH",
+                  pvalueCutoff = 0.01,
+                  qvalueCutoff = 0.05)
+    write.csv(ego,paste0("Adeno GO",i,j,"Mod.csv"))
+    print(dotplot(ego,showCategory = 10,title=paste("GO",i,"enrichments",sep = " ")))
+    dev.copy(tiff,paste("Adeno GO",i,j,"Mod.tiff",sep ="_"),height=320,width=500,bg="transparent")
+    dev.off()
+  }#此处必须加print()命令，否则不出图，不知原因？
+  gene<-getBM(attributes = c("ensembl_gene_id","entrezgene_id"),filters = "ensembl_gene_id",values = gene,mart = mart)
+  gene<-gene$entrezgene_id
+  keggEnrich<-enrichKEGG(gene = gene,
+                         organism = 'hsa',
+                         pvalueCutoff = 0.05,
+                         qvalueCutoff = 0.05,
+                         minGSSize = 1,
+                         use_internal_data = F)
+  write.csv(keggEnrich,paste0("Adeno KEGG ",j," Mod.csv"))
+  print(dotplot(keggEnrich,showCategory=10,title="KEGG enrichments"))#必加print
+  dev.copy(tiff,paste("Adeno KEGG",j,"Mod.tiff",sep ="_"),height=320,width=500,bg="transparent")
+  dev.off()
+  ReactomePA_enrich<-enrichPathway(gene = gene,pvalueCutoff = 0.05,organism = "human")
+  write.csv(ReactomePA_enrich,paste0("Adeno ReactomePA ",j," Mod_dotplot.csv"))
+  print(dotplot(ReactomePA_enrich,showCategory=30,title="ReactomePA pathways enrichments"))
+  dev.copy(tiff,paste("Adeno ReactomePA",j,"Mod_dotplot.tiff",sep ="_"),height=320,width=500,bg="transparent")
+  dev.off()
+  ReactomePADf<-data.frame(ReactomePA_enrich)
+  if (length(ReactomePADf$ID)!=0) {
+    print(emapplot(ReactomePA_enrich))#This function visualizes gene sets as a network (i.e. enri
+    dev.copy(tiff,paste("Adeno ReactomePA",j,"Mod_emapplot.tiff",sep ="_"),height=600,width=900,bg="transparent")
+    dev.off()
+  }
+}#GO
